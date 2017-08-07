@@ -41,7 +41,7 @@ class processpool {
         }
         return m_instance;
     }
-    
+
     ~processpool() { delete[] m_sub_process; }
     //启动进程池
     void run();
@@ -53,7 +53,7 @@ class processpool {
 
    private:
     //进程池允许的最大子进程数量
-    static const int MAX_PROCESS_NUMBER = 16;
+    static const int MAX_PROCESS_NUMBER = 5;
     //每个子进程最多能处理的客户数量
     static const int USER_PER_PROCESS = 65536;
     // epoll最多能处理的事件数
@@ -151,223 +151,185 @@ processpool<T>::processpool(int listenfd, int process_number)
 }
 
 //统一事件源
-template<typename T>
-void processpool<T>::setup_sig_pipe()
-{
-    m_epollfd=epoll_create(5);
-    assert(m_epollfd!=-1);
-    setnonblocking( sig_pipefd[1] );
-    addfd( m_epollfd, sig_pipefd[0] );
+template <typename T>
+void processpool<T>::setup_sig_pipe() {
+    m_epollfd = epoll_create(5);
+    assert(m_epollfd != -1);
+    setnonblocking(sig_pipefd[1]);
+    addfd(m_epollfd, sig_pipefd[0]);
 
-    addsig( SIGCHLD, sig_handler );
-    addsig( SIGTERM, sig_handler );
-    addsig( SIGINT, sig_handler );
-    addsig( SIGPIPE, SIG_IGN );
+    addsig(SIGCHLD, sig_handler);
+    addsig(SIGTERM, sig_handler);
+    addsig(SIGINT, sig_handler);
+    addsig(SIGPIPE, SIG_IGN);
 }
 
 //判断运行父进程还是子进程
-template< typename T >
-void processpool< T >::run()
-{
-    if( m_idx != -1 )
-    {
+template <typename T>
+void processpool<T>::run() {
+    if (m_idx != -1) {
         run_child();
         return;
     }
     run_parent();
 }
 
-template< typename T >
-void processpool< T >::run_child()
-{
+template <typename T>
+void processpool<T>::run_child() {
     setup_sig_pipe();
 
     //与父进程通信的管道
-    int pipefd = m_sub_process[m_idx].m_pipefd[ 1 ];
-    addfd( m_epollfd, pipefd );
+    int pipefd = m_sub_process[m_idx].m_pipefd[1];
+    addfd(m_epollfd, pipefd);
 
-    epoll_event events[ MAX_EVENT_NUMBER ];
-    T* users = new T [ USER_PER_PROCESS ];
-    assert( users );
+    epoll_event events[MAX_EVENT_NUMBER];
+    T* users = new T[USER_PER_PROCESS];
+    assert(users);
     int number = 0;
     int ret = -1;
 
-    while( ! m_stop )
-    {
-        number = epoll_wait( m_epollfd, events, MAX_EVENT_NUMBER, -1 );
-        if ( ( number < 0 ) && ( errno != EINTR ) )
-        {
-            printf( "epoll failure\n" );
+    while (!m_stop) {
+        number = epoll_wait(m_epollfd, events, MAX_EVENT_NUMBER, -1);
+        if ((number < 0) && (errno != EINTR)) {
+            printf("epoll failure\n");
             break;
         }
 
-        for ( int i = 0; i < number; i++ )
-        {
+        for (int i = 0; i < number; i++) {
             int sockfd = events[i].data.fd;
-            if( ( sockfd == pipefd ) && ( events[i].events & EPOLLIN ) )
-            {
+            if ((sockfd == pipefd) && (events[i].events & EPOLLIN)) {
                 int client = 0;
-                ret = recv( sockfd, ( char* )&client, sizeof( client ), 0 );
-                if( ( ( ret < 0 ) && ( errno != EAGAIN ) ) || ret == 0 ) 
-                {
+                ret = recv(sockfd, (char*)&client, sizeof(client), 0);
+                if (((ret < 0) && (errno != EAGAIN)) || ret == 0) {
                     continue;
-                }
-                else
-                {
+                } else {
                     struct sockaddr_in client_address;
-                    socklen_t client_addrlength = sizeof( client_address );
-                    int connfd = accept( m_listenfd, ( struct sockaddr* )&client_address, &client_addrlength );
-                    if ( connfd < 0 )
-                    {
-                        printf( "errno is: %d\n", errno );
+                    socklen_t client_addrlength = sizeof(client_address);
+                    int connfd =
+                        accept(m_listenfd, (struct sockaddr*)&client_address,
+                               &client_addrlength);
+                    if (connfd < 0) {
+                        printf("errno is: %d\n", errno);
                         continue;
                     }
-                    addfd( m_epollfd, connfd );
+                    addfd(m_epollfd, connfd);
 
                     //模板类T必须实现init,以初始化一个客户连接
-                    users[connfd].init( m_epollfd, connfd, client_address );
+                    users[connfd].init(m_epollfd, connfd, client_address);
                 }
             }
 
             //处理信号
-            else if( ( sockfd == sig_pipefd[0] ) && ( events[i].events & EPOLLIN ) )
-            {
+            else if ((sockfd == sig_pipefd[0]) &&
+                     (events[i].events & EPOLLIN)) {
                 int sig;
                 char signals[1024];
-                ret = recv( sig_pipefd[0], signals, sizeof( signals ), 0 );
-                if( ret <= 0 )
-                {
+                ret = recv(sig_pipefd[0], signals, sizeof(signals), 0);
+                if (ret <= 0) {
                     continue;
-                }
-                else
-                {
-                    for( int i = 0; i < ret; ++i )
-                    {
-                        switch( signals[i] )
-                        {
-                            case SIGCHLD:
-                            {
+                } else {
+                    for (int i = 0; i < ret; ++i) {
+                        switch (signals[i]) {
+                            case SIGCHLD: {
                                 pid_t pid;
                                 int stat;
-                                while ( ( pid = waitpid( -1, &stat, WNOHANG ) ) > 0 )
-                                {
+                                while ((pid = waitpid(-1, &stat, WNOHANG)) >
+                                       0) {
                                     continue;
                                 }
                                 break;
                             }
                             case SIGTERM:
-                            case SIGINT:
-                            {
+                            case SIGINT: {
                                 m_stop = true;
                                 break;
                             }
-                            default:
-                            {
-                                break;
-                            }
+                            default: { break; }
                         }
                     }
                 }
             }
 
             //处理可读数据
-            else if( events[i].events & EPOLLIN )
-            {
-                 users[sockfd].process();
-            }
-            else
-            {
+            else if (events[i].events & EPOLLIN) {
+                users[sockfd].process();
+            } else {
                 continue;
             }
         }
     }
 
-    delete [] users;
+    delete[] users;
     users = NULL;
-    close( pipefd );
-    //close( m_listenfd );
-    close( m_epollfd );
+    close(pipefd);
+    // close( m_listenfd );
+    close(m_epollfd);
 }
 
-template< typename T >
-void processpool< T >::run_parent()
-{
+template <typename T>
+void processpool<T>::run_parent() {
     setup_sig_pipe();
 
-    addfd( m_epollfd, m_listenfd );
+    addfd(m_epollfd, m_listenfd);
 
-    epoll_event events[ MAX_EVENT_NUMBER ];
+    epoll_event events[MAX_EVENT_NUMBER];
     int sub_process_counter = 0;
     int new_conn = 1;
     int number = 0;
     int ret = -1;
 
-    while( ! m_stop )
-    {
-        number = epoll_wait( m_epollfd, events, MAX_EVENT_NUMBER, -1 );
-        if ( ( number < 0 ) && ( errno != EINTR ) )
-        {
-            printf( "epoll failure\n" );
+    while (!m_stop) {
+        number = epoll_wait(m_epollfd, events, MAX_EVENT_NUMBER, -1);
+        if ((number < 0) && (errno != EINTR)) {
+            printf("epoll failure\n");
             break;
         }
 
-        for ( int i = 0; i < number; i++ )
-        {
+        for (int i = 0; i < number; i++) {
             int sockfd = events[i].data.fd;
-            if( sockfd == m_listenfd )
-            {
-                int i =  sub_process_counter;
-                do
-                {
-                    if( m_sub_process[i].m_pid != -1 )
-                    {
+            if (sockfd == m_listenfd) {
+                int i = sub_process_counter;
+                do {
+                    if (m_sub_process[i].m_pid != -1) {
                         break;
                     }
-                    i = (i+1)%m_process_number;
-                }
-                while( i != sub_process_counter );
-                
-                if( m_sub_process[i].m_pid == -1 )
-                {
+                    i = (i + 1) % m_process_number;
+                } while (i != sub_process_counter);
+
+                if (m_sub_process[i].m_pid == -1) {
                     m_stop = true;
                     break;
                 }
-                sub_process_counter = (i+1)%m_process_number;
-                //send( m_sub_process[sub_process_counter++].m_pipefd[0], ( char* )&new_conn, sizeof( new_conn ), 0 );
-                send( m_sub_process[i].m_pipefd[0], ( char* )&new_conn, sizeof( new_conn ), 0 );
-                printf( "send request to child %d\n", i );
-                //sub_process_counter %= m_process_number;
+                sub_process_counter = (i + 1) % m_process_number;
+                // send( m_sub_process[sub_process_counter++].m_pipefd[0], (
+                // char* )&new_conn, sizeof( new_conn ), 0 );
+                send(m_sub_process[i].m_pipefd[0], (char*)&new_conn,
+                     sizeof(new_conn), 0);
+                printf("send request to child %d\n", i);
+                // sub_process_counter %= m_process_number;
             }
 
             //处理信号
-            else if( ( sockfd == sig_pipefd[0] ) && ( events[i].events & EPOLLIN ) )
-            {
+            else if ((sockfd == sig_pipefd[0]) &&
+                     (events[i].events & EPOLLIN)) {
                 int sig;
                 char signals[1024];
-                ret = recv( sig_pipefd[0], signals, sizeof( signals ), 0 );
-                if( ret <= 0 )
-                {
+                ret = recv(sig_pipefd[0], signals, sizeof(signals), 0);
+                if (ret <= 0) {
                     continue;
-                }
-                else
-                {
-                    for( int i = 0; i < ret; ++i )
-                    {
-                        switch( signals[i] )
-                        {
-                            case SIGCHLD:
-                            {
+                } else {
+                    for (int i = 0; i < ret; ++i) {
+                        switch (signals[i]) {
+                            case SIGCHLD: {
                                 pid_t pid;
                                 int stat;
                                 //标记子进程退出
-                                while ( ( pid = waitpid( -1, &stat, WNOHANG ) ) > 0 )
-                                {
-                                    for( int i = 0; i < m_process_number; ++i )
-                                    {
-                                        if( m_sub_process[i].m_pid == pid )
-                                        {
-                                            printf( "child %d join\n", i );
-                                            close( m_sub_process[i].m_pipefd[0] );
+                                while ((pid = waitpid(-1, &stat, WNOHANG)) >
+                                       0) {
+                                    for (int i = 0; i < m_process_number; ++i) {
+                                        if (m_sub_process[i].m_pid == pid) {
+                                            printf("child %d join\n", i);
+                                            close(m_sub_process[i].m_pipefd[0]);
                                             m_sub_process[i].m_pid = -1;
                                         }
                                     }
@@ -375,10 +337,8 @@ void processpool< T >::run_parent()
 
                                 //如果所有子进程退出,父进程也退出
                                 m_stop = true;
-                                for( int i = 0; i < m_process_number; ++i )
-                                {
-                                    if( m_sub_process[i].m_pid != -1 )
-                                    {
+                                for (int i = 0; i < m_process_number; ++i) {
+                                    if (m_sub_process[i].m_pid != -1) {
                                         m_stop = false;
                                     }
                                 }
@@ -387,36 +347,28 @@ void processpool< T >::run_parent()
                             case SIGTERM:
 
                             //收到终止信号杀死所有子进程
-                            case SIGINT:
-                            {
-                                printf( "kill all the clild now\n" );
-                                for( int i = 0; i < m_process_number; ++i )
-                                {
+                            case SIGINT: {
+                                printf("kill all the clild now\n");
+                                for (int i = 0; i < m_process_number; ++i) {
                                     int pid = m_sub_process[i].m_pid;
-                                    if( pid != -1 )
-                                    {
-                                        kill( pid, SIGTERM );
+                                    if (pid != -1) {
+                                        kill(pid, SIGTERM);
                                     }
                                 }
                                 break;
                             }
-                            default:
-                            {
-                                break;
-                            }
+                            default: { break; }
                         }
                     }
                 }
-            }
-            else
-            {
+            } else {
                 continue;
             }
         }
     }
 
-    //close( m_listenfd );
-    close( m_epollfd );
+    // close( m_listenfd );
+    close(m_epollfd);
 }
 
 #endif
