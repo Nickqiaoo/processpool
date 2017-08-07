@@ -41,6 +41,7 @@ class processpool {
         }
         return m_instance;
     }
+    
     ~processpool() { delete[] m_sub_process; }
     //启动进程池
     void run();
