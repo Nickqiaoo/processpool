@@ -29,14 +29,64 @@ class cgi_conn {
         m_read_idx = 0;
     }
 
-    void process() {}
+    void process() {
+        int idx = 0;
+        int ret = -1;
+        while (true) {
+            idx = m_read_idx;
+            ret = recv(m_sockfd, m_buf + idx, BUFFER_SIZE - 1 - idx, 0);
+            //如果读操作发生错误,则关闭连接,暂时无数据可读则退出循环
+            if (ret < 0) {
+                if (errno != EAGAIN) removefd(m_epollfd, m_sockfd);
+                break;
+            }
+            //对方关闭连接,服务器也关闭
+            else if (ret == 0) {
+                removefd(m_epollfd, m_sockfd);
+                break;
+            } else {
+                m_read_idx += ret;
+                printf("user content is :%s\n", m_buf);
+                for (; idx < m_read_idx; ++idx) {
+                    if (idx >= 1 && m_buf[idx - 1] == '\r' &&
+                        m_buf[idx] == '\n')
+                        break;
+                }
+                if (idx == m_read_idx) continue;
+                m_buf[idx - 1] = '\0';
+                char* file_name = m_buf;
+                //判断CGI程序是否存在
+                if (access(file_name, F_OK) == -1) {
+                    removefd(m_epollfd, m_sockfd);
+                    break;
+                }
+                //创建子进程执行CGI程序
+                ret = fork();
+                if (ret == -1) {
+                    removefd(m_epollfd, m_sockfd);
+                    break;
+                } else if (ret > 0) {
+                    //父进程关闭连接
+                    removefd(m_epollfd, m_sockfd);
+                    break;
+                } else {
+                    close(STDOUT_FILENO);
+                    dup(m_sockfd);
+                    execl(m_buf, m_buf, 0);
+                    exit(0);
+                }
+            }
+        }
+    }
 
    private:
+    //读缓冲区大小
     static const int BUFFER_SIZE = 1024;
     static int m_epollfd;
     int m_sockfd;
     sockaddr_in m_address;
     char m_buf[BUFFER_SIZE];
+    //标记已经读入的客户数据的最后一个字节的下一个位置
     int m_read_idx;
 };
 

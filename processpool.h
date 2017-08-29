@@ -31,11 +31,11 @@ template <typename T>
 class processpool {
    private:
     //构造函数设为私有,保证只能通过create函数来创建实例
-    processpool(int listenfd, int process_number = 8);
+    processpool(int listenfd, int process_number = 4);
 
    public:
     //单例模式,保证只创建一个processpool实例
-    static processpool<T>* create(int listenfd, int process_number = 8) {
+    static processpool<T>* create(int listenfd, int process_number = 4) {
         if (!m_instance) {
             m_instance = new processpool<T>(listenfd, process_number);
         }
